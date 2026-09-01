@@ -122,4 +122,13 @@ Sample покрывает прямые ключи, секции, Options, `[Conf
 
 `.github/workflows/ci.yml` форматирует, собирает и тестирует solution, затем запускает CLI на SampleApp и сохраняет JSON-отчёт как GitHub Actions artifact.
 
-`.github/workflows/publish-nuget.yml` собирает `.nupkg` при ручном запуске или push тега `v*`. Тег `v0.2.0` публикует package version `0.2.0`. Для публикации добавьте repository secret `NUGET_API_KEY`; ручной запуск публикует пакет только при установленном флаге `publish`.
+`.github/workflows/publish-nuget.yml` собирает `.nupkg` при ручном запуске или push тега `v*`. Тег `v0.2.0` публикует package version `0.2.0`. Ручной запуск публикует пакет только при установленном флаге `publish`.
+
+Публикация использует NuGet Trusted Publishing и GitHub OIDC, поэтому долгоживущий API key не нужен. Настройте policy на nuget.org со следующими значениями:
+
+- Repository owner: `devrus91`;
+- Repository: `roslin-cli-config-exporter`;
+- Workflow file: `publish-nuget.yml`;
+- Environment: оставить пустым, так как workflow не назначает GitHub environment.
+
+В GitHub добавьте Actions repository variable `NUGET_USER`, содержащую имя профиля nuget.org (не email). Workflow получает одноразовый OIDC token через permission `id-token: write`, обменивает его с помощью `NuGet/login@v1.2.0` на краткоживущий API key и сразу использует этот key для `dotnet nuget push`.

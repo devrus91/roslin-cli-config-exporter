@@ -1,0 +1,52 @@
+{
+  "methods": [
+    {
+      "method": "Serilog.*.Configuration",
+      "keyArgument": -1,
+      "prefix": "Serilog",
+      "kind": "WrapperCall"
+    },
+    {
+      "method": "Serilog.*.Configuration",
+      "keyArgument": -1,
+      "prefix": "Serilog:Using:*",
+      "kind": "WrapperCall"
+    },
+    {
+      "method": "Serilog.*.Configuration",
+      "keyArgument": -1,
+      "prefix": "Serilog:MinimumLevel:Default",
+      "kind": "WrapperCall"
+    },
+    {
+      "method": "Serilog.*.Configuration",
+      "keyArgument": -1,
+      "prefix": "Serilog:MinimumLevel:Override:*",
+      "kind": "WrapperCall"
+    },
+    {
+      "method": "Serilog.*.Configuration",
+      "keyArgument": -1,
+      "prefix": "Serilog:WriteTo:*:Name",
+      "kind": "WrapperCall"
+    },
+    {
+      "method": "Serilog.*.Configuration",
+      "keyArgument": -1,
+      "prefix": "Serilog:WriteTo:*:Args:*",
+      "kind": "WrapperCall"
+    },
+    {
+      "method": "Serilog.*.Configuration",
+      "keyArgument": -1,
+      "prefix": "Serilog:Enrich:*",
+      "kind": "WrapperCall"
+    },
+    {
+      "method": "Serilog.*.Configuration",
+      "keyArgument": -1,
+      "prefix": "Serilog:Properties:*",
+      "kind": "WrapperCall"
+    }
+  ]
+}

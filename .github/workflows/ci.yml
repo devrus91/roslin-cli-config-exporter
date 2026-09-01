@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: |
+            src/RoslynConfigExporter/RoslynConfigExporter.csproj
+            tests/RoslynConfigExporter.Tests/RoslynConfigExporter.Tests.csproj
+            samples/SampleApp/SampleApp.csproj
+
+      - name: Restore
+        run: dotnet restore RoslynConfigExporter.slnx
+
+      - name: Verify formatting
+        run: dotnet format RoslynConfigExporter.slnx --verify-no-changes --no-restore
+
+      - name: Build
+        run: dotnet build RoslynConfigExporter.slnx --configuration Release --no-restore
+
+      - name: Test
+        run: dotnet test RoslynConfigExporter.slnx --configuration Release --no-build
+
+      - name: Analyze sample
+        run: >-
+          dotnet run
+          --project src/RoslynConfigExporter/RoslynConfigExporter.csproj
+          --configuration Release
+          --no-build
+          --
+          samples/SampleApp/SampleApp.csproj
+          --config samples/SampleApp/appsettings.json
+          --rules samples/SampleApp/config-usage.rules.json
+          --output artifacts/ci-report.json
+          --format json
+          --fail-on-missing
+
+      - name: Upload sample report
+        uses: actions/upload-artifact@v7
+        with:
+          name: configuration-usage-report
+          path: artifacts/ci-report.json
+          if-no-files-found: error

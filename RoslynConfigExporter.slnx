@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="src/RoslynConfigExporter/RoslynConfigExporter.csproj" />
+  <Project Path="samples/SampleApp/SampleApp.csproj" />
+  <Project Path="tests/RoslynConfigExporter.Tests/RoslynConfigExporter.Tests.csproj" />
+</Solution>

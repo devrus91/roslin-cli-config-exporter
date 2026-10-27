@@ -18,6 +18,7 @@ public sealed class ConfigurationUsageAnalyzer(
         var bindings = new List<OptionsBinding>();
         var consumers = new List<OptionsConsumer>();
         var issues = new List<ProjectIssue>();
+        var environmentSources = new List<EnvironmentSource>();
 
         foreach (var project in solution.Projects.Where(p => p.Language == LanguageNames.CSharp))
         {
@@ -41,6 +42,7 @@ public sealed class ConfigurationUsageAnalyzer(
                 .ToArray();
             var wrappers = await DiscoverWrappersAsync(documents, cancellationToken).ConfigureAwait(false);
 
+
             foreach (var document in documents)
             {
                 var root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
@@ -59,10 +61,13 @@ public sealed class ConfigurationUsageAnalyzer(
                     usages,
                     bindings,
                     consumers);
+                environmentSources.AddRange(EnvironmentSourceReader.Read(project.Name, root, model));
             }
+            ExternalAssemblyAnalyzer.Analyze(project.Name, compilation, usages, issues, environmentSources, cancellationToken);
+            FrameworkMetadata.Enrich(project.Name, compilation, usages);
         }
 
-        return new(usages, bindings, consumers, issues);
+        return new(usages, bindings, consumers, issues, environmentSources.Distinct().ToArray());
     }
 
     private static void AnalyzeDocument(
@@ -99,6 +104,8 @@ public sealed class ConfigurationUsageAnalyzer(
                 continue;
             }
 
+            LoggingConfigurationAnalyzer.Analyze(project, invocation, model, usages);
+            KestrelConfigurationAnalyzer.Analyze(project, invocation, model, usages);
             AnalyzeBuiltInInvocation(project, invocation, method, model, evaluator, usages, bindings);
             AnalyzeWrapperInvocation(project, invocation, method, evaluator, wrappers, usages);
             AnalyzeExternalWrapperInvocation(project, invocation, method, evaluator, externalRules, usages);
@@ -177,7 +184,13 @@ public sealed class ConfigurationUsageAnalyzer(
                         evaluator.ResolveConfigurationPrefix(receiver!),
                         evaluator.Evaluate(arguments[0].Expression));
                     var valueType = method.TypeArguments.FirstOrDefault() ?? method.ReturnType;
-                    AddUsage(usages, project, key, UsageKind.GetValue, valueType, null, invocation);
+                    var defaultArgument = arguments.Skip(1).FirstOrDefault();
+                    var defaultConstant = defaultArgument is null ? default : model.GetConstantValue(defaultArgument.Expression);
+                    var defaultValue = defaultConstant.HasValue
+                        ? defaultConstant.Value is null ? "null" : Convert.ToString(defaultConstant.Value, System.Globalization.CultureInfo.InvariantCulture)
+                        : defaultArgument is null ? null : "Выражение: " + defaultArgument.Expression;
+                    AddUsage(usages, project, key, UsageKind.GetValue, valueType, null, invocation,
+                        metadata: new(null, null, null, null, defaultValue));
                     break;
                 }
 
@@ -193,7 +206,7 @@ public sealed class ConfigurationUsageAnalyzer(
             case "Get" when isConfigReceiver && method.TypeArguments.FirstOrDefault() is INamedTypeSymbol getType:
                 {
                     var section = evaluator.ResolveConfigurationPrefix(receiver!);
-                    AddBindingAndProperties(project, getType, section, UsageKind.Get, invocation, usages, bindings);
+                    AddBindingAndProperties(model, project, getType, section, UsageKind.Get, invocation, usages, bindings);
                     break;
                 }
 
@@ -239,7 +252,7 @@ public sealed class ConfigurationUsageAnalyzer(
 
         if (target is not null && model.GetTypeInfo(target).Type is INamedTypeSymbol optionsType)
         {
-            AddBindingAndProperties(project, optionsType, section, UsageKind.Bind, invocation, usages, bindings);
+            AddBindingAndProperties(model, project, optionsType, section, UsageKind.Bind, invocation, usages, bindings);
         }
         else
         {
@@ -269,7 +282,7 @@ public sealed class ConfigurationUsageAnalyzer(
         }
 
         var section = evaluator.ResolveConfigurationPrefix(configArgument.Expression);
-        AddBindingAndProperties(project, optionsType, section, UsageKind.Configure, invocation, usages, bindings);
+        AddBindingAndProperties(model, project, optionsType, section, UsageKind.Configure, invocation, usages, bindings);
     }
 
     private static void AnalyzeBindConfiguration(
@@ -295,7 +308,7 @@ public sealed class ConfigurationUsageAnalyzer(
         }
 
         var section = evaluator.Evaluate(arguments[0].Expression);
-        AddBindingAndProperties(project, optionsType, section, UsageKind.BindConfiguration, invocation, usages, bindings);
+        AddBindingAndProperties(model, project, optionsType, section, UsageKind.BindConfiguration, invocation, usages, bindings);
     }
 
     private static void AnalyzeOptionsBuilderBind(
@@ -316,7 +329,7 @@ public sealed class ConfigurationUsageAnalyzer(
         }
 
         AddBindingAndProperties(
-            project,
+            model, project,
             optionsType,
             evaluator.ResolveConfigurationPrefix(configArgument.Expression),
             UsageKind.Configure,
@@ -326,6 +339,7 @@ public sealed class ConfigurationUsageAnalyzer(
     }
 
     private static void AddBindingAndProperties(
+        SemanticModel model,
         string project,
         INamedTypeSymbol optionsType,
         EvaluatedKey section,
@@ -345,7 +359,7 @@ public sealed class ConfigurationUsageAnalyzer(
             sourceLocation));
 
         AddUsage(usages, project, section, api, optionsType, optionsType, location);
-        foreach (var (key, type) in OptionsTypeExpander.Expand(optionsType, section.Text))
+        foreach (var (key, type, metadata) in OptionsTypeExpander.Expand(optionsType, section.Text, model.Compilation))
         {
             var confidence = key.Contains('*', StringComparison.Ordinal)
                 ? Confidence.Pattern
@@ -359,7 +373,7 @@ public sealed class ConfigurationUsageAnalyzer(
                 optionsType.DisplayName(),
                 sourceLocation,
                 location.ToString(),
-                "Inferred from configuration binding."));
+                "Inferred from configuration binding.", metadata, Origin: optionsType.Locations.Any(l => l.IsInSource) ? UsageOrigin.Source : UsageOrigin.Assembly));
         }
     }
 
@@ -371,7 +385,8 @@ public sealed class ConfigurationUsageAnalyzer(
         ITypeSymbol? valueType,
         INamedTypeSymbol? optionsType,
         SyntaxNode node,
-        string? note = null)
+        string? note = null,
+        ParameterMetadata? metadata = null)
     {
         if (key.IsEmpty && kind is not (UsageKind.Bind or UsageKind.Get or UsageKind.Configure))
         {
@@ -387,7 +402,7 @@ public sealed class ConfigurationUsageAnalyzer(
             optionsType?.DisplayName(),
             SymbolUtilities.LocationOf(node),
             node.ToString(),
-            note));
+            note, (metadata ?? new(null, null, null, null, null)) with { Nullable = RequirementMetadata.IsNullable(valueType), Required = false }, IsOpenGeneric: valueType.ContainsTypeParameter()));
     }
 
     private static bool IsOptionsBuilder(ITypeSymbol? type) =>
@@ -564,7 +579,7 @@ public sealed class ConfigurationUsageAnalyzer(
                 null,
                 SymbolUtilities.LocationOf(invocation),
                 invocation.ToString(),
-                $"Inferred through source wrapper ({summary.InnerKind})."));
+                $"Inferred through source wrapper ({summary.InnerKind}).", Metadata: new(RequirementMetadata.IsNullable(method.ReturnType), false, null, null, null), IsOpenGeneric: method.TypeArguments.Any(t => t.ContainsTypeParameter()) || method.ReturnType.ContainsTypeParameter()));
         }
     }
 
@@ -612,7 +627,7 @@ public sealed class ConfigurationUsageAnalyzer(
                 null,
                 SymbolUtilities.LocationOf(invocation),
                 invocation.ToString(),
-                $"Matched external wrapper rule: {rule.Method}."));
+                $"Matched external wrapper rule: {rule.Method}.", Metadata: new(RequirementMetadata.IsNullable(method.ReturnType), false, null, null, null), IsOpenGeneric: method.TypeArguments.Any(t => t.ContainsTypeParameter()) || method.ReturnType.ContainsTypeParameter()));
         }
     }
 

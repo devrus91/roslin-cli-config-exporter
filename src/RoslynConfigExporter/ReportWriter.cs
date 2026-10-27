@@ -55,13 +55,32 @@ internal static class ReportWriter
         builder.AppendLine($"Generated: `{report.GeneratedAtUtc:O}`  ");
         builder.AppendLine($"Projects: {report.Projects.Count}; keys: {report.Keys.Count}; usages: {report.Usages.Count}");
         builder.AppendLine();
-        builder.AppendLine("| Key | Confidence | Type | Usages | In config |");
-        builder.AppendLine("|---|---|---|---:|:---:|");
-        foreach (var key in report.Keys)
+        foreach (var group in report.Keys.GroupBy(k => k.Origin).OrderBy(g => g.Key))
         {
-            builder.AppendLine($"| `{EscapeMarkdown(key.Key)}` | {key.Confidence} | {EscapeMarkdown(string.Join(", ", key.ValueTypes))} | {key.UsageCount} | {(key.PresentInConfiguration ? "yes" : "no")} |");
+            builder.AppendLine(group.Key == UsageOrigin.Source ? "## Найдено в исходниках" : "## Найдено в сборках");
+            builder.AppendLine();
+            builder.AppendLine("| Иерархия в спецификации | Параметр | Тип значения | Обязательный<br>(nullable) | Требует переопределения<br>(required) | Описание | Возможные значения | Значение по умолчанию | Пример значения | Источник<br>(env/ехс/...) |");
+            builder.AppendLine("|---|---|---|---|---|---|---|---|---|---|");
+            foreach (var key in group)
+            {
+                var metadata = report.Usages.Where(u => string.Equals(u.Key, key.Key, StringComparison.OrdinalIgnoreCase))
+                    .Select(u => u.Metadata).OfType<ParameterMetadata>().ToArray();
+                string Values(Func<ParameterMetadata, string?> select) => string.Join("; ", metadata.Select(select).OfType<string>().Distinct());
+                var split = key.Key.LastIndexOf(':');
+                var cells = new[]
+                {
+                key.Key.Contains(ExternalAssemblyAnalyzer.UnknownParent, StringComparison.Ordinal) ? "Иерархия неизвестна" + (split > ExternalAssemblyAnalyzer.UnknownParent.Length ? " (известная часть: " + key.Key[(ExternalAssemblyAnalyzer.UnknownParent.Length + 1)..split] + ")" : "") : split < 0 ? "Корень" : key.Key[..split], split < 0 ? key.Key : key.Key[(split + 1)..],
+                string.Join(", ", key.ValueTypes),
+                Values(m => m.Nullable is null ? null : m.Nullable.Value ? "Нет (nullable)" : "Да (non-nullable)"),
+                Values(m => m.Required is null ? null : m.Required.Value ? "Да" : "Нет"),
+                Values(m => m.Description), Values(m => m.PossibleValues), Values(m => m.DefaultValue),
+                Values(m => m.Example), EnvironmentVariable(key, report)
+            };
+                builder.AppendLine("| " + string.Join(" | ", cells.Select(c => EscapeMarkdown(string.IsNullOrEmpty(c) ? "Неизвестно" : c))) + " |");
+            }
+            builder.AppendLine();
         }
-
+        builder.AppendLine("Nullable описывает тип, required — наличие [Required]. Источник показывает стандартное имя переменной среды (__ вместо :). Учитываются prefix провайдеров AddEnvironmentVariables, найденных в проекте; при нескольких провайдерах перечислены варианты. Наличие переменных не проверяется. Если регистрация не обнаружена, показано имя для стандартного провайдера без prefix. Пример значения берётся из XML-тега example.");
         if (report.UnusedConfigurationEntries.Count > 0)
         {
             builder.AppendLine();
@@ -87,7 +106,22 @@ internal static class ReportWriter
         return builder.ToString();
     }
 
+    private static string EnvironmentVariable(KeySummary key, AnalysisReport report)
+    {
+        if (key.Key.Contains(ExternalAssemblyAnalyzer.UnknownParent, StringComparison.Ordinal))
+            return "env: неизвестно (иерархия неизвестна)";
+        var prefixes = key.Projects.SelectMany(project =>
+        {
+            var sources = (report.EnvironmentSources ?? []).Where(s => s.Project == project).ToArray();
+            return sources.Length == 0 ? new string?[] { "" } : sources.Select(s => s.Prefix);
+        }).Distinct().ToArray();
+        var suffix = key.Key.Replace(":", "__", StringComparison.Ordinal);
+        return string.Join("; ", prefixes.Select(prefix => prefix is null
+            ? "env: неизвестно (динамический prefix)"
+            : "env: " + prefix.Replace(":", "__", StringComparison.Ordinal) + suffix +
+                (key.Key.IndexOfAny(['*', '{']) >= 0 ? " (шаблон)" : "")));
+    }
     private static string Csv(string value) => '"' + value.Replace("\"", "\"\"", StringComparison.Ordinal) + '"';
 
-    private static string EscapeMarkdown(string value) => value.Replace("|", "\\|", StringComparison.Ordinal).Replace("`", "'", StringComparison.Ordinal);
+    private static string EscapeMarkdown(string value) => value.Replace("\r", "", StringComparison.Ordinal).Replace("\n", "<br>", StringComparison.Ordinal).Replace("|", "\\|", StringComparison.Ordinal).Replace("`", "'", StringComparison.Ordinal);
 }

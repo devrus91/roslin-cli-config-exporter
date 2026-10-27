@@ -29,6 +29,11 @@ public enum Confidence
 
 public sealed record SourceLocation(string File, int Line, int Column);
 
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum UsageOrigin { Source, Assembly }
+
+public sealed record FrameworkSetting(string Family, string Path);
+
 public sealed record ConfigurationUsage(
     string Project,
     string Key,
@@ -38,7 +43,14 @@ public sealed record ConfigurationUsage(
     string? OptionsType,
     SourceLocation Location,
     string Expression,
-    string? Note = null);
+    string? Note = null,
+    ParameterMetadata? Metadata = null,
+    UsageOrigin Origin = UsageOrigin.Source,
+    FrameworkSetting? FrameworkSetting = null,
+    bool IsOpenGeneric = false);
+
+public sealed record ParameterMetadata(bool? Nullable, bool? Required, string? Description,
+    string? PossibleValues, string? DefaultValue, string? Example = null);
 
 public sealed record OptionsBinding(
     string Project,
@@ -66,7 +78,8 @@ public sealed record KeySummary(
     IReadOnlyList<string> Projects,
     int UsageCount,
     bool PresentInConfiguration,
-    IReadOnlyList<string> ConfigurationFiles);
+    IReadOnlyList<string> ConfigurationFiles,
+    UsageOrigin Origin = UsageOrigin.Source);
 
 public sealed record AnalysisReport(
     string SchemaVersion,
@@ -79,7 +92,10 @@ public sealed record AnalysisReport(
     IReadOnlyList<OptionsConsumer> OptionsConsumers,
     IReadOnlyList<ConfigFileEntry> ConfigurationEntries,
     IReadOnlyList<ConfigFileEntry> UnusedConfigurationEntries,
-    IReadOnlyList<ProjectIssue> Issues);
+    IReadOnlyList<ProjectIssue> Issues,
+    IReadOnlyList<EnvironmentSource>? EnvironmentSources = null);
+
+public sealed record EnvironmentSource(string Project, string? Prefix, SourceLocation? Location = null);
 
 internal readonly record struct EvaluatedKey(string Text, Confidence Confidence)
 {
@@ -90,4 +106,5 @@ public sealed record AnalysisResult(
     List<ConfigurationUsage> Usages,
     List<OptionsBinding> OptionsBindings,
     List<OptionsConsumer> OptionsConsumers,
-    List<ProjectIssue> Issues);
+    List<ProjectIssue> Issues,
+    IReadOnlyList<EnvironmentSource>? EnvironmentSources = null);

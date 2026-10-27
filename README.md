@@ -14,6 +14,7 @@ CLI-инструмент на Roslyn, который загружает `.sln`, 
 - рекурсивное разворачивание Options-классов, включая наследование, nullable-типы, массивы, коллекции, словари и `[ConfigurationKeyName]`;
 - поиск потребителей `IOptions<T>`, `IOptionsSnapshot<T>` и `IOptionsMonitor<T>`;
 - простой межпроцедурный анализ исходных wrapper-методов, пробрасывающих аргумент ключа в стандартный Configuration API;
+- чтение IL внешних сборок через reflection: индексатор, GetValue, GetSection, GetRequiredSection и GetConnectionString; методы анализируемой сборки не вызываются;
 - настраиваемые правила для wrapper-методов из внешних сборок;
 - сверка с одним или несколькими `appsettings*.json`: отсутствующие и не сопоставленные параметры;
 - JSON, CSV и Markdown; отдельные exit codes для динамических и отсутствующих ключей.
@@ -40,7 +41,7 @@ dotnet run --project src/RoslynConfigExporter/RoslynConfigExporter.csproj -- `
 
 ```powershell
 dotnet pack src/RoslynConfigExporter/RoslynConfigExporter.csproj -c Release -o artifacts/package
-dotnet tool install --global --add-source artifacts/package RoslynConfigExporter.Tool --version 0.1.0
+dotnet tool install --global --add-source artifacts/package RoslynConfigExporter.Tool --version 0.4.0
 
 config-usage path/to/Application.sln --config path/to/appsettings.json
 ```
@@ -61,7 +62,7 @@ config-usage <solution.sln|solution.slnx|project.csproj> [options]
 
 ## Внешние wrapper-методы
 
-Roslyn не может узнать поведение метода из скомпилированной сторонней библиотеки. Для него можно описать правило:
+Для внешних DLL автоматически проверяются тела методов через reflection. Прямые чтения с константными ключами отмечаются Inferred, неизвестные ключи — Dynamic. Поддерживаются простые цепочки секций и локальные переменные. В location хранится путь DLL, line = 0, column = IL offset. Анализ охватывает методы сборки без доказательства их достижимости из приложения. Аргументы вызовов из исходника передаются в анализ внешнего метода; внутри одной DLL отслеживаются простые вызовы, возвращаемые секции и поля экземпляра, заполненные конструктором. Рекурсия ограничена 12 уровнями; сложные ветвления и неоднозначные перегрузки могут оставить контекст неизвестным. Для дополнительных wrapper-методов можно описать правило:
 
 ```json
 {
@@ -94,7 +95,7 @@ Roslyn не может узнать поведение метода из ско�
 
 - значения ключей, полностью создаваемые reflection, `dynamic`, runtime-кодом или внешним процессом;
 - сложные wrapper-методы с ветвящимися преобразованиями аргумента; для них рекомендуется внешнее правило;
-- конфигурацию, читаемую внутри сторонней сборки, если её исходники не входят в анализируемый solution;
+- полное покрытие сторонних сборок: нужны DLL с телами методов и доступные зависимости; reference assemblies, сложный поток данных, переходы между методами и runtime reflection полностью не восстанавливаются; ошибки загрузки отражаются в Issues;
 - фактическое наличие значений в environment variables, Key Vault, Consul и других providers — сравнение JSON проверяет только переданные файлы;
 - все варианты multi-target проекта за один запуск: `MSBuildWorkspace` загружает выбранную MSBuild-конфигурацию проекта.
 
@@ -116,4 +117,49 @@ dotnet test RoslynConfigExporter.slnx -c Release
 dotnet build samples/SampleApp/SampleApp.csproj -c Release
 ```
 
-Sample покрывает прямые ключи, секции, Options, `[ConfigurationKeyName]`, коллекции/словари, connection strings, исходный wrapper, три вида `IOptions`, динамический tenant key и Serilog, читающий настройки из `appsettings.json`. Для внешней сборки Serilog используются правила из `samples/SampleApp/config-usage.rules.json`.
+Sample покрывает прямые ключи, секции, Options, `[ConfigurationKeyName]`, коллекции/словари, connection strings, исходный wrapper, три вида `IOptions`, динамический tenant key и Serilog, читающий настройки из `appsettings.json`. Для стандартного Serilog внешние правила больше не нужны; `samples/SampleApp/config-usage.rules.json` оставлен как пример ручных правил.
+
+## Markdown-спецификация
+
+`--format markdown` формирует таблицу: «Иерархия в спецификации», «Параметр», «Тип значения», «Обязательный (nullable)», «Требует переопределения (required)», «Описание», «Возможные значения», «Значение по умолчанию», «Пример значения», «Источник (env/ехс/...)».
+
+- Иерархия — путь родительской секции, параметр — последний сегмент ключа. Корневые секции отмечаются «Корень». Не восстановленный контекст DLL отмечается «Иерархия неизвестна», при наличии показывается известная часть пути. В JSON неизвестный родитель представлен `{unknown-parent}`; такие пути не сопоставляются с JSON-конфигурацией.
+- «Обязательный»: Нет для `Nullable<T>` и nullable reference types (`string?` и т. п.), Да для остальных разрешённых типов. Nullable-аннотации учитываются и в метаданных DLL. «Требует переопределения»: Нет при отсутствии `Required` или явном boolean false в аргументе Required; иначе Да. Для стандартного `[Required]` свойство `AllowEmptyStrings = false` не отключает требование. Ключевое слово C# `required` само по себе на эту колонку не влияет.
+- Описание: `[Description]`, затем XML `<summary>` свойства в исходнике или в XML-файле рядом с DLL.
+- Значение по умолчанию: `[DefaultValue]`, затем явный инициализатор свойства в исходнике. Константы вычисляются семантически, остальные инициализаторы показываются с пометкой «Выражение». Также учитывается явный default в `GetValue` в исходнике. Инициализаторы в скомпилированных DLL не исполняются и не восстанавливаются; для них используйте `[DefaultValue]`.
+- Возможные значения для enum берутся из имён его констант в анализируемой версии сборки, включая aliases и flags. Пример берётся из `<example>` XML-комментария или XML-файла сборки; неизвестные поля отмечены «Неизвестно».
+- Источник в Markdown содержит `env: PREFIX_Section__Parameter`. Учитываются строковые prefix из `AddEnvironmentVariables` в исходниках и IL внешних сборок, включая аргументы внешних wrapper-методов. Несколько найденных в проекте провайдеров дают несколько вариантов; связь с отдельными экземплярами IConfiguration и runtime-приоритет не устанавливаются. Динамический prefix и неизвестная иерархия отмечаются явно. Если регистраций не найдено, используется стандартное имя без prefix. Наличие переменных среды не проверяется. JSON/CSV сохраняют сведения о совпадениях с конфигурационными файлами.
+
+Дополнительные метаданные доступны и в JSON в `usages[].metadata`.
+
+### Значения по умолчанию коллекций
+
+Массивы и списки из инициализаторов выводятся как JSON-массивы, словари — как JSON-объекты. Поддерживаются `[]`, `Array.Empty<T>()`, `new List<T>()`, `new Dictionary<TKey, TValue>()`, сокращённое `new()` и непустые инициализаторы с константными элементами. Свойства `IList<T>`, `ICollection<T>` и `IDictionary<TKey, TValue>` поддерживаются при инициализации через `List<T>` или `Dictionary<TKey, TValue>`.
+
+Для объектов внутри коллекций учитываются инициализаторы публичных свойств класса и базовых классов. Явные присваивания в инициализаторе объекта имеют приоритет, включая `null`. Вложенная запись `Child = { Name = "override" }` сохраняет остальные значения существующего объекта. Запись `Items = { 3 }` добавляет элементы к исходному списку; словари поддерживают добавление `{ "key", value }` и замену через `["key"] = value`. Повторный ключ при добавлении пары не превращается в замену: такой инициализатор сохраняется как «Выражение».
+
+JSON сложной коллекции показывается в отдельной строке; значения конкретных элементов не подменяют значения по умолчанию отдельных свойств в строках с `*`. Описание и пример элементов коллекций наследуются из XML-комментариев свойства коллекции, если собственные отсутствуют.
+
+Конструкторы, методы и getters приложения не выполняются. Если значение нельзя восстановить статически или достигнут предел рекурсии, сохраняется исходное выражение вместо неполного JSON. Значения из тел конструкторов и CLR defaults не добавляются автоматически.
+
+[Пример Markdown-отчёта](samples/configuration-report.md) можно пересоздать:
+
+```powershell
+dotnet run --project src/RoslynConfigExporter -c Release -- samples/SampleApp/SampleApp.csproj --format markdown --config samples/SampleApp/appsettings.json --output samples/configuration-report.md
+```
+
+### Стандартные секции Serilog, Microsoft Logging и Kestrel
+
+При обнаружении `ReadFrom.Configuration`/`ConfigurationSection` применяется встроенная схема Serilog: `MinimumLevel`, `WriteTo`, overrides, sinks и другие стандартные пути. Учитываются родительская секция IConfiguration, аргумент `sectionName` и `ConfigurationReaderOptions.SectionName` в инициализаторе. Неизвестные options сохраняют неизвестный путь. Чтения через wrapper в DLL также обрабатываются. Непривязанный обход внутренних методов Serilog заменён этой схемой, чтобы не создавать дубли без контекста.
+
+`WebApplication.CreateBuilder`, `Host.CreateDefaultBuilder` и `Host.CreateApplicationBuilder` раскрывают стандартную секцию `Logging`. Явный `logging.AddConfiguration(section)` использует переданный путь. Включены `LogLevel:Default`, категории и уровни для отдельных providers.
+
+Для `WebApplication.CreateBuilder`/`CreateSlimBuilder` и `ConfigureWebHostDefaults` обнаруживается `Kestrel`. Явный `KestrelServerOptions.Configure(section)` использует указанную секцию. Схема включает endpoints, протоколы, SNI и сертификаты. `Limits` не добавляется автоматически: стандартный загрузчик секции его не привязывает; нужен явный binding/чтение в коде.
+
+Эти пути отмечаются `Inferred`/`Pattern`: это поддерживаемые настройки API, а не утверждение, что каждая настройка задана или обязательна. По переданным JSON дополнительно раскрываются конкретные пути массивов, endpoint-имена и категории, например `Serilog:WriteTo:0:Name` и `Kestrel:Endpoints:Http:Url`, с соответствующими env-именами. Возможные runtime-переопределения регистрации не моделируются.
+
+Источники схем: [Serilog Settings Configuration](https://github.com/serilog/serilog-settings-configuration), [Microsoft Logging](https://learn.microsoft.com/aspnet/core/fundamentals/logging/), [Kestrel configuration reader](https://github.com/dotnet/aspnetcore/blob/v10.0.0/src/Servers/Kestrel/Core/src/Internal/ConfigurationReader.cs).
+
+Метаданные стандартных схем связываются с API-символами библиотек: типом enum, свойством или параметром метода. Описания читаются из `[Description]`/XML, а не из вручную написанного словаря. Default извлекается из атрибута, инициализатора, optional-параметра либо явного XML-утверждения о default; свободный текст XML помечается `XML:`. Значения из appsettings не считаются default или example. Если точного соответствия или документации нет, поле остаётся неизвестным; динамические аргументы sinks могут иметь тип `object`.
+
+Markdown сначала выводит «Найдено в исходниках», затем «Найдено в сборках» (включая схемы стандартных библиотек). Ключ, найденный обоими способами, показывается один раз в группе исходников. Происхождение хранится в JSON как `origin`. Неразрешённые открытые generic-типы (`T`, `List<T>` и т. п.) исключены из отчёта; конкретные вызовы wrapper-методов сохраняются.

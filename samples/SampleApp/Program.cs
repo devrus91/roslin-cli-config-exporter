@@ -48,19 +48,49 @@ public sealed class MailOptions
 
 public sealed class SmtpOptions
 {
+    /// <summary>SMTP server hostname.</summary>
+    /// <example>smtp.example.test</example>
     public string Host { get; set; } = "";
     public int Port { get; set; }
 }
 
 public sealed class FeatureOptions
 {
-    public Dictionary<string, FeatureDefinition> Definitions { get; set; } = [];
+    public Dictionary<string, FeatureDefinition> Definitions { get; set; } = new()
+    {
+        ["preview"] = new FeatureDefinition
+        {
+            Enabled = true,
+            Audiences = ["internal"],
+            AdditionalAudiences = { "beta" },
+            Tags = { "preview" },
+            Labels = { ["channel"] = "preview" },
+            Child = { Name = "override" }
+        }
+    };
 }
 
 public sealed class FeatureDefinition
 {
+    public FeatureChild Child { get; set; } = new() { Name = "default", Limit = 25 };
     public bool Enabled { get; set; }
-    public string[] Audiences { get; set; } = [];
+    /// <summary>Audiences allowed to use this feature.</summary>
+    /// <example>internal</example>
+    public string[] Audiences { get; set; } = Array.Empty<string>();
+    /// <summary>Additional audience names.</summary>
+    /// <example>partners</example>
+    public IList<string> AdditionalAudiences { get; set; } = new List<string> { "partners", "internal" };
+    /// <summary>Tags associated with the feature.</summary>
+    public ICollection<string> Tags { get; set; } = new List<string> { "default" };
+    /// <summary>Labels associated with the feature.</summary>
+    /// <example>internal</example>
+    public IDictionary<string, string> Labels { get; set; } = new Dictionary<string, string> { ["visibility"] = "internal" };
+}
+
+public sealed class FeatureChild
+{
+    public string Name { get; set; } = "child";
+    public int Limit { get; set; } = 10;
 }
 
 public sealed class CacheOptions

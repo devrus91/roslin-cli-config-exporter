@@ -4,24 +4,30 @@ namespace RoslynConfigExporter;
 
 internal static class OptionsTypeExpander
 {
-    public static IEnumerable<(string Key, string Type)> Expand(INamedTypeSymbol optionsType, string section)
+    public static IEnumerable<(string Key, string Type, ParameterMetadata? Metadata)> Expand(INamedTypeSymbol optionsType, string section, Compilation compilation)
     {
         var visited = new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
-        return ExpandCore(optionsType, KeyEvaluator.Normalize(section), visited, 0);
+        return ExpandCore(optionsType, KeyEvaluator.Normalize(section), visited, 0, compilation);
     }
 
-    private static IEnumerable<(string Key, string Type)> ExpandCore(
+    private static IEnumerable<(string Key, string Type, ParameterMetadata? Metadata)> ExpandCore(
         ITypeSymbol type,
         string prefix,
         HashSet<ITypeSymbol> path,
-        int depth)
+        int depth, Compilation compilation)
     {
+        var declaredType = type;
         type = UnwrapNullable(type);
         if (depth > 16 || IsScalar(type))
         {
             if (!string.IsNullOrEmpty(prefix))
             {
-                yield return (prefix, type.DisplayName());
+                yield return (prefix, declaredType.DisplayName(), IsScalar(type)
+                    ? new ParameterMetadata(RequirementMetadata.IsNullable(declaredType), false, null,
+                        type.TypeKind == TypeKind.Enum
+                            ? string.Join(", ", type.GetMembers().OfType<IFieldSymbol>().Where(f => f.HasConstantValue).Select(f => f.Name)) : null,
+                        null)
+                    : null);
             }
 
             yield break;
@@ -29,7 +35,7 @@ internal static class OptionsTypeExpander
 
         if (TryGetDictionaryValue(type, out var dictionaryValue))
         {
-            foreach (var item in ExpandCore(dictionaryValue, Join(prefix, "*"), path, depth + 1))
+            foreach (var item in ExpandCore(dictionaryValue, Join(prefix, "*"), path, depth + 1, compilation))
             {
                 yield return item;
             }
@@ -39,7 +45,7 @@ internal static class OptionsTypeExpander
 
         if (TryGetElementType(type, out var elementType))
         {
-            foreach (var item in ExpandCore(elementType, Join(prefix, "*"), path, depth + 1))
+            foreach (var item in ExpandCore(elementType, Join(prefix, "*"), path, depth + 1, compilation))
             {
                 yield return item;
             }
@@ -49,7 +55,7 @@ internal static class OptionsTypeExpander
 
         if (!path.Add(type))
         {
-            yield return (Join(prefix, "{recursive}"), type.DisplayName());
+            yield return (Join(prefix, "{recursive}"), type.DisplayName(), null);
             yield break;
         }
 
@@ -67,9 +73,46 @@ internal static class OptionsTypeExpander
                     ?.ConstructorArguments.FirstOrDefault().Value as string
                     ?? property.Name;
 
-                foreach (var item in ExpandCore(property.Type, Join(prefix, keyName), path, depth + 1))
+                var collectionType = UnwrapNullable(property.Type);
+                if ((TryGetDictionaryValue(collectionType, out var memberType) || TryGetElementType(collectionType, out memberType)) &&
+                    !IsScalar(UnwrapNullable(memberType)) && PropertyMetadataReader.DefaultValue(property, compilation) is { } collectionDefault)
                 {
-                    yield return item;
+                    // Keep the whole collection default on its own row, not on each element's scalar properties.
+                    yield return (Join(prefix, keyName), property.Type.DisplayName(), new ParameterMetadata(
+                        RequirementMetadata.IsNullable(property.Type), RequirementMetadata.RequiresOverride(property),
+                        PropertyMetadataReader.Description(property, compilation), null, collectionDefault,
+                        PropertyMetadataReader.Example(property, compilation)));
+                }
+
+                foreach (var item in ExpandCore(property.Type, Join(prefix, keyName), path, depth + 1, compilation))
+                {
+                    var scalar = UnwrapNullable(property.Type);
+                    string? Attribute(string name) => property.GetAttributes()
+                        .FirstOrDefault(a => a.AttributeClass?.ToDisplayString() == name)
+                        ?.ConstructorArguments.FirstOrDefault().Value?.ToString();
+                    var nullable = RequirementMetadata.IsNullable(property.Type);
+                    if (!IsScalar(scalar))
+                    {
+                        var metadata = item.Metadata;
+                        if (metadata is not null && (TryGetDictionaryValue(scalar, out _) || TryGetElementType(scalar, out _)))
+                        {
+                            metadata = metadata with
+                            {
+                                Description = metadata.Description ?? PropertyMetadataReader.Description(property, compilation),
+                                Example = metadata.Example ?? PropertyMetadataReader.Example(property, compilation),
+                                // The wildcard row represents this collection. Do not apply its
+                                // initializer to individual properties of complex element objects.
+                                DefaultValue = metadata.DefaultValue ?? (item.Key == Join(Join(prefix, keyName), "*")
+                                    ? PropertyMetadataReader.DefaultValue(property, compilation) : null)
+                            };
+                        }
+                        yield return (item.Key, item.Type, metadata);
+                        continue;
+                    }
+                    yield return (item.Key, property.Type.DisplayName(), new ParameterMetadata(nullable, RequirementMetadata.RequiresOverride(property),
+                            Attribute("System.ComponentModel.DescriptionAttribute") ?? PropertyMetadataReader.Description(property, compilation),
+                            scalar.TypeKind == TypeKind.Enum ? string.Join(", ", scalar.GetMembers().OfType<IFieldSymbol>().Where(f => f.HasConstantValue).Select(f => f.Name)) : null,
+                            PropertyMetadataReader.DefaultValue(property, compilation), PropertyMetadataReader.Example(property, compilation)));
                 }
             }
         }

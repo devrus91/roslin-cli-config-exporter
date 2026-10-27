@@ -11,7 +11,16 @@ internal static class ReportBuilder
         IReadOnlyList<ConfigFileEntry> configEntries,
         IEnumerable<ProjectIssue>? workspaceIssues = null)
     {
-        var usages = result.Usages
+        var concreteFrameworkUsages = result.Usages
+            .Where(u => (u.Note == LoggingConfigurationAnalyzer.Note || u.Note == KestrelConfigurationAnalyzer.Note) && u.Key.Contains('*') && !u.Key.Contains('{'))
+            .SelectMany(u => configEntries.Where(e => Matches(u.Key, e.Key))
+                .Select(e => u with
+                {
+                    Key = e.Key,
+                    Confidence = Confidence.Inferred,
+                    Note = u.Note + " Concrete path matched in supplied configuration."
+                }));
+        var usages = result.Usages.Concat(concreteFrameworkUsages).Where(u => !u.IsOpenGeneric)
             .DistinctBy(u => (
                 u.Project,
                 u.Key.ToUpperInvariant(),
@@ -42,9 +51,9 @@ internal static class ReportBuilder
                     group.Select(u => u.Project).Distinct().Order().ToArray(),
                     group.Count(),
                     files.Length > 0,
-                    files);
+                    files, group.Any(u => u.Origin == UsageOrigin.Source) ? UsageOrigin.Source : UsageOrigin.Assembly);
             })
-            .OrderBy(k => k.Key, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(k => k.Origin).ThenBy(k => k.Key, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
         var unused = configEntries
@@ -62,11 +71,12 @@ internal static class ReportBuilder
             result.OptionsConsumers.Distinct().OrderBy(c => c.OptionsType).ToArray(),
             configEntries,
             unused,
-            result.Issues.Concat(workspaceIssues ?? []).ToArray());
+            result.Issues.Concat(workspaceIssues ?? []).ToArray(), result.EnvironmentSources);
     }
 
     public static bool Matches(string usagePattern, string configKey)
     {
+        if (usagePattern.Contains(ExternalAssemblyAnalyzer.UnknownParent, StringComparison.Ordinal)) return false;
         if (string.Equals(usagePattern, configKey, StringComparison.OrdinalIgnoreCase))
         {
             return true;

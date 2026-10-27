@@ -5,6 +5,14 @@ namespace RoslynConfigExporter;
 
 internal static class SymbolUtilities
 {
+    public static bool ContainsTypeParameter(this ITypeSymbol? type) => type switch
+    {
+        ITypeParameterSymbol => true,
+        INamedTypeSymbol named => named.IsUnboundGenericType || named.TypeArguments.Any(t => t.ContainsTypeParameter()),
+        IArrayTypeSymbol array => array.ElementType.ContainsTypeParameter(),
+        _ => false
+    };
+
     public const string IConfiguration = "Microsoft.Extensions.Configuration.IConfiguration";
     public const string IConfigurationSection = "Microsoft.Extensions.Configuration.IConfigurationSection";
 

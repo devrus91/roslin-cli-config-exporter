@@ -23,10 +23,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Setup .NET
+      - name: Setup .NET 8 SDK
         uses: actions/setup-dotnet@v6
         with:
-          global-json-file: global.json
+          dotnet-version: 8.0.4xx
           cache: true
           cache-dependency-path: |
             src/RoslynConfigExporter/RoslynConfigExporter.csproj
@@ -34,16 +34,16 @@ jobs:
             samples/SampleApp/SampleApp.csproj
 
       - name: Restore
-        run: dotnet restore RoslynConfigExporter.slnx
+        run: dotnet restore RoslynConfigExporter.sln
 
       - name: Verify formatting
-        run: dotnet format RoslynConfigExporter.slnx --verify-no-changes --no-restore
+        run: dotnet format RoslynConfigExporter.sln --verify-no-changes --no-restore
 
       - name: Build
-        run: dotnet build RoslynConfigExporter.slnx --configuration Release --no-restore
+        run: dotnet build RoslynConfigExporter.sln --configuration Release --no-restore
 
       - name: Test
-        run: dotnet test RoslynConfigExporter.slnx --configuration Release --no-build
+        run: dotnet test RoslynConfigExporter.sln --configuration Release --no-build
 
       - name: Analyze sample
         run: >-

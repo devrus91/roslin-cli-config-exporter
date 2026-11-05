@@ -32,10 +32,10 @@ CLI-инструмент на Roslyn, который загружает `.sln`, 
 
 ## Сборка и запуск
 
-Требуется .NET 10 SDK.
+Требуется .NET 8 SDK.
 
 ```powershell
-dotnet build RoslynConfigExporter.slnx -c Release
+dotnet build RoslynConfigExporter.sln -c Release
 
 dotnet run --project src/RoslynConfigExporter/RoslynConfigExporter.csproj -- `
   path/to/Application.sln `
@@ -122,7 +122,7 @@ config-usage <solution.sln|solution.slnx|project.csproj> [options]
 ## Проверка
 
 ```powershell
-dotnet test RoslynConfigExporter.slnx -c Release
+dotnet test RoslynConfigExporter.sln -c Release
 dotnet build samples/SampleApp/SampleApp.csproj -c Release
 ```
 
